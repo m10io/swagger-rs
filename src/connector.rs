@@ -1,10 +1,9 @@
 //! Utility methods for instantiating common connectors for clients.
 extern crate hyper_tls;
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
 extern crate native_tls;
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-extern crate openssl;
 
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use hyper;
@@ -20,7 +19,6 @@ pub fn http_connector() -> Box<Fn() -> hyper::client::HttpConnector + Send + Syn
 /// # Arguments
 ///
 /// * `ca_certificate` - Path to CA certificate used to authenticate the server
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
 pub fn https_connector<CA>(
     ca_certificate: CA,
 ) -> Box<Fn() -> hyper_tls::HttpsConnector<hyper::client::HttpConnector> + Send + Sync>
@@ -29,92 +27,69 @@ where
 {
     let ca_certificate = ca_certificate.as_ref().to_owned();
     Box::new(move || {
-        // SSL implementation
-        let mut ssl =
-            openssl::ssl::SslConnectorBuilder::new(openssl::ssl::SslMethod::tls()).unwrap();
+        let mut builder = native_tls::TlsConnector::builder();
 
         // Server authentication
-        ssl.set_ca_file(ca_certificate.clone()).unwrap();
+        let mut cert_bytes = Vec::new();
+        File::open(&ca_certificate)
+            .unwrap()
+            .read_to_end(&mut cert_bytes)
+            .unwrap();
+        let cert = native_tls::Certificate::from_pem(&cert_bytes).unwrap();
+        builder.add_root_certificate(cert);
 
-        let builder: native_tls::TlsConnectorBuilder =
-            native_tls::backend::openssl::TlsConnectorBuilderExt::from_openssl(ssl);
         let mut connector = hyper::client::HttpConnector::new(4);
         connector.enforce_http(false);
         let connector: hyper_tls::HttpsConnector<hyper::client::HttpConnector> =
             (connector, builder.build().unwrap()).into();
         connector
     })
-}
-
-/// Not currently implemented on Mac OS X, iOS and Windows.
-/// This function will panic when called.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))]
-pub fn https_connector<CA>(
-    _ca_certificate: CA,
-) -> Box<Fn() -> hyper_tls::HttpsConnector<hyper::client::HttpConnector> + Send + Sync>
-where
-    CA: AsRef<Path>,
-{
-    unimplemented!("See issue #43 (https://github.com/Metaswitch/swagger-rs/issues/43)")
 }
 
 /// Returns a function which creates https-connectors for mutually authenticated connections.
 /// # Arguments
 ///
 /// * `ca_certificate` - Path to CA certificate used to authenticate the server
-/// * `client_key` - Path to the client private key
-/// * `client_certificate` - Path to the client's public certificate associated with the private key
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
-pub fn https_mutual_connector<CA, K, C>(
+/// * `client_key` - Path to the DER-formatted PKCS #12 archive containing the client private key
+/// * `client_password` - Password for decrypting the client private key
+pub fn https_mutual_connector<CA, K, P>(
     ca_certificate: CA,
     client_key: K,
-    client_certificate: C,
+    client_password: P,
 ) -> Box<Fn() -> hyper_tls::HttpsConnector<hyper::client::HttpConnector> + Send + Sync>
 where
     CA: AsRef<Path>,
     K: AsRef<Path>,
-    C: AsRef<Path>,
+    P: AsRef<str>,
 {
     let ca_certificate = ca_certificate.as_ref().to_owned();
     let client_key = client_key.as_ref().to_owned();
-    let client_certificate = client_certificate.as_ref().to_owned();
+    let client_password = client_password.as_ref().to_owned();
     Box::new(move || {
-        // SSL implementation
-        let mut ssl =
-            openssl::ssl::SslConnectorBuilder::new(openssl::ssl::SslMethod::tls()).unwrap();
+        let mut builder = native_tls::TlsConnector::builder();
 
         // Server authentication
-        ssl.set_ca_file(ca_certificate.clone()).unwrap();
+        let mut cert_bytes = Vec::new();
+        File::open(&ca_certificate)
+            .unwrap()
+            .read_to_end(&mut cert_bytes)
+            .unwrap();
+        let cert = native_tls::Certificate::from_pem(&cert_bytes).unwrap();
+        builder.add_root_certificate(cert);
 
         // Client authentication
-        ssl.set_private_key_file(client_key.clone(), openssl::x509::X509_FILETYPE_PEM)
+        let mut key_bytes = Vec::new();
+        File::open(&client_key)
+            .unwrap()
+            .read_to_end(&mut key_bytes)
             .unwrap();
-        ssl.set_certificate_chain_file(client_certificate.clone())
-            .unwrap();
-        ssl.check_private_key().unwrap();
+        let identity = native_tls::Identity::from_pkcs12(&key_bytes, &client_password).unwrap();
+        builder.identity(identity);
 
-        let builder: native_tls::TlsConnectorBuilder =
-            native_tls::backend::openssl::TlsConnectorBuilderExt::from_openssl(ssl);
         let mut connector = hyper::client::HttpConnector::new(4);
         connector.enforce_http(false);
         let connector: hyper_tls::HttpsConnector<hyper::client::HttpConnector> =
             (connector, builder.build().unwrap()).into();
         connector
     })
-}
-
-/// Not currently implemented on Mac OS X, iOS and Windows.
-/// This function will panic when called.
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "ios"))]
-pub fn https_mutual_connector<CA, K, C>(
-    _ca_certificate: CA,
-    _client_key: K,
-    _client_certificate: C,
-) -> Box<Fn() -> hyper_tls::HttpsConnector<hyper::client::HttpConnector> + Send + Sync>
-where
-    CA: AsRef<Path>,
-    K: AsRef<Path>,
-    C: AsRef<Path>,
-{
-    unimplemented!("See issue #43 (https://github.com/Metaswitch/swagger-rs/issues/43)")
 }
